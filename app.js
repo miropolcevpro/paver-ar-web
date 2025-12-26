@@ -116,6 +116,8 @@ function pointInUI(target){
   const clearBtn = $("clearBtn");
   const visualizeBtn = $("visualizeBtn");
   const shotBtn = $("shotBtn");
+  const ctaEl = $("cta");
+
   const areaOut = $("areaOut");
   // Optional element (some UI versions had a second area label)
   const areaOut2 = $("areaOut2") || { textContent: "" };
@@ -313,6 +315,8 @@ function pointInUI(target){
   let pointMeshes = [];
   let isClosed = false;
   let floorY = null;
+  let floorQuatStore = new THREE.Quaternion();
+  let floorOriginStore = new THREE.Vector3();
   let calibrated = false;
   let filledMesh = null;
   let filledGroup = null;
@@ -341,6 +345,7 @@ function pointInUI(target){
     pointMeshes = [];
     points = [];
     isClosed = false;
+    ctaEl.hidden = true;
     visualizeBtn.classList.add("hidden");
     shotBtn.classList.add("hidden");
     areaOut.textContent = "–";
@@ -555,6 +560,7 @@ function pointInUI(target){
     const threshold = 0.18; // ~18 cm
     if(d <= threshold){
       isClosed = true;
+      ctaEl.hidden = false;
       // make all points green
       for(const m of pointMeshes) m.material = pointMatClosed;
       updateLine();
@@ -689,6 +695,7 @@ function pointInUI(target){
 
     applyMaterialAndUV();
 
+        ctaEl.hidden = false;
     shotBtn.classList.remove("hidden");
   }
 
@@ -747,7 +754,7 @@ function pointInUI(target){
     // Some devices don't support 'local-floor' for immersive-ar.
     // three.js ALSO calls session.requestReferenceSpace() inside renderer.xr.setSession(),
     // so we must pick a supported type first, then set that type on WebXRManager.
-    const refTypeCandidates = ["local", "viewer", "local-floor"]; // prefer compatibility; floor is calibrated via hit-test
+    const refTypeCandidates = ["local", "viewer"]; // prefer compatibility; floor is calibrated via hit-test
     let refType = null;
     refSpace = null;
 
@@ -776,19 +783,13 @@ function pointInUI(target){
     try{
       await renderer.xr.setSession(xrSession);
     }catch(e){
-      // Some runtimes misreport support: if 'local' fails inside three.js, fall back to 'viewer'.
-      if(e && e.name === "NotSupportedError" && refType !== "viewer"){
-        refType = "viewer";
-        refSpace = await xrSession.requestReferenceSpace("viewer");
-        if(renderer?.xr?.setReferenceSpaceType) renderer.xr.setReferenceSpaceType("viewer");
-        await renderer.xr.setSession(xrSession);
-      }else{
-        throw e;
-      }
+      // Fail fast: do not retry setSession() with a different referenceSpaceType in the same renderer.
+      // Retrying can leave WebXRManager in a bad state and cause XR framebuffer errors.
+      throw e;
     }
 
-if(!sessionSet || !refSpace){
-      throw new Error("WebXR: это устройство не поддерживает reference space local-floor/local/viewer.");
+if(!refSpace){
+      throw new Error("WebXR: это устройство не поддерживает reference space local/viewer.");
     }
 
     // DOM/canvas transparency & UI behavior in AR
@@ -796,6 +797,9 @@ if(!sessionSet || !refSpace){
     document.body.classList.add("xr-presenting");
     // In AR we prefer an unobstructed camera view; keep the panel collapsed by default.
     setPanelCollapsed(true);
+    ctaEl.hidden = true;
+    visualizeBtn.classList.add(\"hidden\");
+    shotBtn.classList.add(\"hidden\");
 
     // hit test (best-effort)
     try{
@@ -864,6 +868,9 @@ if(!sessionSet || !refSpace){
     reticle.visible = false;
     document.documentElement.classList.remove("xr-presenting");
     document.body.classList.remove("xr-presenting");
+    ctaEl.hidden = true;
+    visualizeBtn.classList.add(\"hidden\");
+    shotBtn.classList.add(\"hidden\");
     enterArBtn.classList.remove("hidden");
     exitArBtn.classList.add("hidden");
     exitArBtn.disabled = true;
@@ -886,13 +893,17 @@ if(!sessionSet || !refSpace){
 
     // floorY from smoothed hit
     floorY = smoothPos.y;
+
+    floorQuatStore.copy(hitQuat);
+    floorOriginStore.copy(smoothPos);
     calibrated = true;
 
     // reset contours on recalibration
     resetContour();
 
     // move grid to floor
-    grid.position.y = floorY + 0.001;
+    grid.position.set(smoothPos.x, floorY + 0.001, smoothPos.z);
+    grid.quaternion.copy(floorQuatStore);
 
     setStatus("Пол зафиксирован. Теперь тапайте по периметру, чтобы поставить точки.");
     setHelp(false);
@@ -940,6 +951,9 @@ if(!sessionSet || !refSpace){
   }
 
   function render(timestamp, frame){
+    // Safety: if we are presenting but didn't get an XRFrame,
+    // do NOT render (prevents WebGL INVALID_FRAMEBUFFER_OPERATION on some runtimes/emulators).
+    if(renderer?.xr?.isPresenting && !frame) return;
     if(xrSession && frame){
       updateReticle(frame);
 
@@ -948,6 +962,11 @@ if(!sessionSet || !refSpace){
         // overwrite Y only (keep rotation)
         tmpMat4.fromArray(reticle.matrix.elements);
         tmpMat4.decompose(tmpVec, hitQuat, hitScale);
+        // keep grid under reticle for clear user feedback
+        if(calibrated){
+          grid.position.set(tmpVec.x, floorY + 0.001, tmpVec.z);
+          grid.quaternion.copy(floorQuatStore);
+        }
         tmpVec.y = floorY + 0.001;
         tmpMat4.compose(tmpVec, hitQuat, hitScale);
         reticle.matrix.fromArray(tmpMat4.elements);
@@ -994,6 +1013,7 @@ if(!sessionSet || !refSpace){
   // Preview loop (non-AR). We keep it as a named loop so we can reliably stop it
   // before XR session setup (prevents rendering to XRWebGLLayer outside XR frame callback).
   function previewLoop(){
+    if(renderer?.xr?.isPresenting) return;
     renderer.render(scene, camera);
   }
   function startPreviewLoop(){

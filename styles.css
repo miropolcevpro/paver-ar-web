@@ -418,3 +418,16 @@ select, .search{
 .unsupportedList{ margin: 12px 0 16px; color: rgba(255,255,255,.82); }
 .unsupportedActions{ display:flex; flex-wrap:wrap; gap: 10px; }
 .unsupportedNote{ margin-top: 14px; }
+
+
+/* --- AR mode UI tweaks --- */
+.xr-presenting .panel.collapsed{ transform: translateY(calc(100% + 24px)); }
+.xr-presenting .cta{
+  left: auto;
+  right: calc(12px + var(--safe-right));
+  bottom: calc(140px + var(--safe-bot));
+  flex-direction: column;
+  align-items: flex-end;
+  z-index: 40;
+}
+.xr-presenting .cta .btn{ min-width: 150px; }
