@@ -747,35 +747,47 @@ function pointInUI(target){
     // Some devices don't support 'local-floor' for immersive-ar.
     // three.js ALSO calls session.requestReferenceSpace() inside renderer.xr.setSession(),
     // so we must pick a supported type first, then set that type on WebXRManager.
-    const refTypeCandidates = ["local-floor", "local", "viewer"]; // in preferred order
+    const refTypeCandidates = ["local", "viewer", "local-floor"]; // prefer compatibility; floor is calibrated via hit-test
     let refType = null;
     refSpace = null;
 
-    let sessionSet = false;
+    // Pick a supported referenceSpace type BEFORE handing the session to three.js.
+    // Calling renderer.xr.setSession() multiple times (and failing) can leave WebXRManager in a bad state.
     for(const t of refTypeCandidates){
       try{
-        // Probe support at the WebXR layer BEFORE involving three.js.
-        const space = await xrSession.requestReferenceSpace(t);
-
-        // Tell three.js which reference space type it should request internally.
-        if(renderer?.xr?.setReferenceSpaceType) renderer.xr.setReferenceSpaceType(t);
-
-        // Now it is safe to hand the session to three.js.
-        await renderer.xr.setSession(xrSession);
-
+        refSpace = await xrSession.requestReferenceSpace(t);
         refType = t;
-        refSpace = space;
-        sessionSet = true;
         break;
       }catch(e){
         if(e && e.name === "NotSupportedError"){
-          // skip unsupported types quietly
           continue;
         }
         throw e;
       }
     }
-    if(!sessionSet || !refSpace){
+
+    if(!refSpace || !refType){
+      throw new Error("WebXR: это устройство не поддерживает reference space local/viewer.");
+    }
+
+    // Tell three.js which reference space type it should request internally, then set the session ONCE.
+    if(renderer?.xr?.setReferenceSpaceType) renderer.xr.setReferenceSpaceType(refType);
+
+    try{
+      await renderer.xr.setSession(xrSession);
+    }catch(e){
+      // Some runtimes misreport support: if 'local' fails inside three.js, fall back to 'viewer'.
+      if(e && e.name === "NotSupportedError" && refType !== "viewer"){
+        refType = "viewer";
+        refSpace = await xrSession.requestReferenceSpace("viewer");
+        if(renderer?.xr?.setReferenceSpaceType) renderer.xr.setReferenceSpaceType("viewer");
+        await renderer.xr.setSession(xrSession);
+      }else{
+        throw e;
+      }
+    }
+
+if(!sessionSet || !refSpace){
       throw new Error("WebXR: это устройство не поддерживает reference space local-floor/local/viewer.");
     }
 
